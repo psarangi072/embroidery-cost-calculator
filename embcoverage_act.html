@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Precision Embroidery Costing Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.5.23/jspdf.plugin.autotable.min.js"></script>
+    <style>
+        body { @apply bg-slate-50 font-sans text-slate-900 overflow-hidden; }
+        #canvas-container { 
+            position: relative; 
+            background: #f1f5f9; 
+            border-radius: 1rem; 
+            overflow: auto; 
+            height: 60vh; 
+            border: 2px solid #e2e8f0;
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+        }
+        canvas { display: block; max-width: 100%; height: auto; cursor: crosshair; }
+        #overlayCanvas { 
+            position: absolute; 
+            top: 0; left: 0; 
+            pointer-events: none; 
+            opacity: 0.7; 
+            mix-blend-mode: multiply; 
+        }
+        .table-wrapper { @apply flex-1 overflow-y-auto border border-slate-200 rounded-xl bg-white shadow-sm; }
+        .t-header { @apply sticky top-0 bg-slate-800 text-white text-[10px] uppercase tracking-tighter p-3 text-center font-bold; }
+        .t-cell { @apply p-2 text-center text-[11px] border-b border-slate-100 font-medium; }
+        .input-field { @apply w-full bg-slate-50 border border-slate-200 rounded text-center py-1 focus:ring-1 focus:ring-indigo-500 outline-none font-bold text-slate-700; }
+    </style>
+</head>
+<body class="p-4">
+
+    <div class="max-w-[1900px] mx-auto flex flex-col h-[96vh] gap-4">
+        
+        <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-200 flex justify-between items-center">
+            <div class="flex items-center gap-6">
+                <div class="flex items-center gap-2">
+                    <div class="bg-indigo-600 text-white p-2 rounded-lg font-black italic">EMB</div>
+                    <h1 class="text-xl font-bold text-slate-800">Stitch Analyzer <span class="text-indigo-500">v2.0</span></h1>
+                </div>
+                
+                <div class="flex items-center gap-3 bg-slate-100 px-4 py-2 rounded-xl border border-slate-200">
+                    <label class="text-[10px] font-black uppercase text-slate-500">Real Design Width (Inches):</label>
+                    <input type="number" id="physicalWidth" value="5" step="0.1" 
+                           class="w-16 bg-white border border-slate-300 rounded text-center font-bold text-indigo-600 outline-none focus:ring-2 focus:ring-indigo-400"
+                           onchange="updateDisplay()">
+                </div>
+            </div>
+
+            <div class="flex gap-3">
+                <input type="file" id="upload" class="hidden" accept="image/*">
+                <button onclick="document.getElementById('upload').click()" class="bg-slate-100 hover:bg-slate-200 text-slate-700 px-5 py-2 rounded-lg font-bold text-xs uppercase transition-all">Upload Artwork</button>
+                <button id="exportBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-5 py-2 rounded-lg font-bold text-xs uppercase shadow-lg transition-all">Export PDF</button>
+            </div>
+        </div>
+
+        <div class="flex-1 grid grid-cols-12 gap-4 overflow-hidden">
+            
+            <div class="col-span-7 flex flex-col gap-3">
+                <div id="canvas-container">
+                    <div class="relative">
+                        <canvas id="mainCanvas"></canvas>
+                        <canvas id="overlayCanvas"></canvas>
+                    </div>
+                </div>
+                <div class="bg-slate-800 p-3 rounded-xl flex justify-between text-white text-[10px] font-bold uppercase tracking-widest">
+                    <span>Click colors to analyze • Double-click canvas to reset</span>
+                    <span id="status" class="text-indigo-300">Awaiting Upload...</span>
+                </div>
+            </div>
+
+            <div class="col-span-5 flex flex-col gap-4 overflow-hidden">
+                <div class="table-wrapper">
+                    <table class="w-full table-fixed min-w-[700px]">
+                        <thead>
+                            <tr>
+                                <th class="t-header w-12">Clr</th>
+                                <th class="t-header w-28">Type</th>
+                                <th class="t-header">Stitches</th>
+                                <th class="t-header">Time</th>
+                                <th class="t-header">Thread</th>
+                                <th class="t-header">Rate</th>
+                                <th class="t-header">Labor/h</th>
+                                <th class="t-header">Total</th>
+                                <th class="t-header w-10"></th>
+                            </tr>
+                        </thead>
+                        <tbody id="resultsBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="bg-indigo-600 p-6 rounded-2xl text-white shadow-xl flex justify-between items-end">
+                    <div>
+                        <p class="text-[10px] font-bold uppercase opacity-70 mb-1">Total Stitches (Calibrated)</p>
+                        <p id="totalStitches" class="text-4xl font-black">0</p>
+                    </div>
+                    <div class="text-right">
+                        <p class="text-[10px] font-bold uppercase opacity-70 mb-1">Estimated Net Cost</p>
+                        <p id="grandTotal" class="text-6xl font-black tracking-tighter">₹ 0.00</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('mainCanvas');
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const oCanvas = document.getElementById('overlayCanvas');
+        const oCtx = oCanvas.getContext('2d');
+        const resultsBody = document.getElementById('resultsBody');
+        
+        let selections = [];
+        let bitmask = []; 
+        const MACHINE_SPEED = 750; 
+
+        // CONFIG Factors: (Normalized for physical square inches)
+        const CONFIG = {
+            'Standard': { stitchFactor: 0.12, threadFactor: 0.006, rate: 1.5, labor: 150 },
+            '3D Puff': { stitchFactor: 0.18, threadFactor: 0.012, rate: 3.2, labor: 280 },
+            'Zari': { stitchFactor: 0.10, threadFactor: 0.005, rate: 4.8, labor: 200 },
+            'Satin Fill': { stitchFactor: 0.15, threadFactor: 0.008, rate: 2.1, labor: 180 }
+        };
+
+        document.getElementById('upload').addEventListener('change', (e) => {
+            const reader = new FileReader();
+            reader.onload = (f) => {
+                const img = new Image();
+                img.onload = () => {
+                    canvas.width = oCanvas.width = img.width;
+                    canvas.height = oCanvas.height = img.height;
+                    ctx.drawImage(img, 0, 0);
+                    bitmask = new Int32Array(img.width * img.height).fill(0);
+                    oCtx.clearRect(0,0,oCanvas.width, oCanvas.height);
+                    selections = [];
+                    updateDisplay();
+                    document.getElementById('status').innerText = `IMAGE READY: ${img.width}x${img.height}px`;
+                };
+                img.src = f.target.result;
+            };
+            reader.readAsDataURL(e.target.files[0]);
+        });
+
+        canvas.addEventListener('click', (e) => {
+            if (!bitmask.length) return;
+            const rect = canvas.getBoundingClientRect();
+            const x = Math.floor((e.clientX - rect.left) * (canvas.width / rect.width));
+            const y = Math.floor((e.clientY - rect.top) * (canvas.height / rect.height));
+            
+            if (bitmask[y * canvas.width + x] !== 0) return;
+
+            const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+            const targetColor = [
+                imgData[(y * canvas.width + x) * 4],
+                imgData[(y * canvas.width + x) * 4 + 1],
+                imgData[(y * canvas.width + x) * 4 + 2]
+            ];
+            
+            const selectionID = Date.now();
+            const highlightColor = `rgba(${targetColor[0]}, ${targetColor[1]}, ${targetColor[2]}, 0.8)`;
+            let pixelCount = 0;
+
+            oCtx.fillStyle = `hsl(${Math.random() * 360}, 70%, 50%)`;
+
+            for (let i = 0; i < imgData.length; i += 4) {
+                const idx = i / 4;
+                if (bitmask[idx] !== 0) continue;
+
+                const r = imgData[i], g = imgData[i+1], b = imgData[i+2];
+                const diff = Math.sqrt(Math.pow(r - targetColor[0], 2) + Math.pow(g - targetColor[1], 2) + Math.pow(b - targetColor[2], 2));
+
+                if (diff < 25) { 
+                    bitmask[idx] = selectionID;
+                    pixelCount++;
+                    oCtx.fillRect(idx % canvas.width, Math.floor(idx / canvas.width), 1, 1);
+                }
+            }
+
+            if (pixelCount > 10) {
+                selections.push({
+                    id: selectionID,
+                    color: oCtx.fillStyle,
+                    rgb: targetColor,
+                    pixelCount: pixelCount,
+                    style: 'Standard',
+                    rate: CONFIG['Standard'].rate,
+                    labor: CONFIG['Standard'].labor
+                });
+                updateDisplay();
+            }
+        });
+
+        function updateDisplay() {
+            resultsBody.innerHTML = '';
+            let totalS = 0, grandT = 0;
+
+            // FIX: Calculation based on Physical Calibration
+            const physWidth = parseFloat(document.getElementById('physicalWidth').value) || 5;
+            const ppi = canvas.width / physWidth; // Pixels per Inch
+            const areaScale = Math.pow(ppi, 2); // Pixels per Square Inch
+
+            selections.forEach((s, i) => {
+                const conf = CONFIG[s.style];
+                
+                // Formula: (Pixels / Pixels-per-sq-inch) * Stitch-Density-Factor
+                // We use a constant multiplier (12000) to translate physical area to typical embroidery density
+                const stitches = Math.max(1, Math.floor((s.pixelCount / areaScale) * (conf.stitchFactor * 15000)));
+                
+                const mTime = (stitches / MACHINE_SPEED).toFixed(1);
+                const thread = (stitches * conf.threadFactor).toFixed(2);
+                const total = (parseFloat(thread) * s.rate) + ((mTime / 60) * s.labor);
+                
+                totalS += stitches; grandT += total;
+
+                resultsBody.innerHTML += `
+                    <tr>
+                        <td class="t-cell"><div class="w-5 h-5 mx-auto rounded border" style="background:rgb(${s.rgb.join(',')})"></div></td>
+                        <td class="t-cell">
+                            <select onchange="updateRow(${i}, 'style', this.value)" class="input-field">
+                                ${Object.keys(CONFIG).map(k => `<option value="${k}" ${s.style === k ? 'selected' : ''}>${k}</option>`).join('')}
+                            </select>
+                        </td>
+                        <td class="t-cell font-bold">${stitches.toLocaleString()}</td>
+                        <td class="t-cell font-mono">${mTime}m</td>
+                        <td class="t-cell text-indigo-600 font-bold">${thread}m</td>
+                        <td class="t-cell"><input type="number" step="0.1" value="${s.rate}" class="input-field" onchange="updateRow(${i}, 'rate', this.value)"></td>
+                        <td class="t-cell"><input type="number" value="${s.labor}" class="input-field" onchange="updateRow(${i}, 'labor', this.value)"></td>
+                        <td class="t-cell font-black text-slate-900">₹${total.toFixed(2)}</td>
+                        <td class="t-cell"><button onclick="removeRow(${i})" class="text-red-500 hover:text-red-700 font-bold text-lg">×</button></td>
+                    </tr>`;
+            });
+
+            document.getElementById('totalStitches').innerText = totalS.toLocaleString();
+            document.getElementById('grandTotal').innerText = `₹ ${grandT.toLocaleString(undefined, {minimumFractionDigits: 2})}`;
+        }
+
+        function updateRow(i, k, v) {
+            selections[i][k] = v;
+            if (k === 'style') {
+                selections[i].rate = CONFIG[v].rate;
+                selections[i].labor = CONFIG[v].labor;
+            }
+            updateDisplay();
+        }
+
+        function removeRow(i) {
+            const id = selections[i].id;
+            for (let j = 0; j < bitmask.length; j++) if (bitmask[j] === id) bitmask[j] = 0;
+            selections.splice(i, 1);
+            redrawOverlay();
+            updateDisplay();
+        }
+
+        function redrawOverlay() {
+            oCtx.clearRect(0, 0, oCanvas.width, oCanvas.height);
+            selections.forEach(s => {
+                oCtx.fillStyle = s.color;
+                for (let j = 0; j < bitmask.length; j++) {
+                    if (bitmask[j] === s.id) oCtx.fillRect(j % canvas.width, Math.floor(j / canvas.width), 1, 1);
+                }
+            });
+        }
+
+        canvas.addEventListener('dblclick', () => {
+            selections = [];
+            bitmask.fill(0);
+            oCtx.clearRect(0, 0, oCanvas.width, oCanvas.height);
+            updateDisplay();
+        });
+
+        document.getElementById('exportBtn').addEventListener('click', () => {
+            if (!selections.length) return;
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF('p', 'mm', 'a4');
+            doc.setFont("helvetica", "bold");
+            doc.text("EMBROIDERY COSTING REPORT", 14, 20);
+            
+            const tableData = selections.map(s => {
+                const physWidth = parseFloat(document.getElementById('physicalWidth').value) || 5;
+                const areaScale = Math.pow(canvas.width / physWidth, 2);
+                const conf = CONFIG[s.style];
+                const stitches = Math.floor((s.pixelCount / areaScale) * (conf.stitchFactor * 15000));
+                const thread = (stitches * conf.threadFactor).toFixed(2);
+                const total = (parseFloat(thread) * s.rate) + (((stitches/MACHINE_SPEED) / 60) * s.labor);
+                return [s.style, stitches, thread + 'm', 'Rs.' + s.rate, 'Rs.' + total.toFixed(2)];
+            });
+
+            doc.autoTable({
+                head: [['Style', 'Stitches', 'Thread', 'Rate/m', 'Subtotal']],
+                body: tableData,
+                startY: 30,
+                theme: 'striped',
+                headStyles: { fillColor: [79, 70, 229] }
+            });
+
+            doc.save('Embroidery_Estimate.pdf');
+        });
+    </script>
+</body>
+</html>
